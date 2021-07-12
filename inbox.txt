@@ -1,0 +1,29 @@
+Since 2010, I’ve been working, on and off, on a branch off of libtorrent which use asynchronous disk I/O, instead of the synchronous disk calls in the disk thread in 0.16.x versions.
+
+The aio branch has several performance improvements apart from allowing multiple disk operations outstanding at any given time. For instance:
+
+the disk cache allows multiple threads accessing it (cache hits are served immediately, even as other threads are flushing and reading data into blocks).
+pieces no longer need to be flushed to disk before they can be uploaded to other peers.
+socket operations can be performed in a thread pool. This is useful for expensive operations like SSL sockets.
+the disk cache uses ARC instead of LRU and has O(1) complexity instead of O(log n).
+the disk cache supports multiple cache layers, where an SSD drive can be inserted as a second level cache.
+the piece picker has been optimized
+the torrent list has been optimized to support hundreds of thousands of torrents loaded simultaneously.
+hashing pieces is done in parallel, to improve download speed.
+The first attempt at doing disk I/O asynchronous used various system specific operations for truly async. operations. The idea was that the more operations the kernel knows about, the better scheduling it can perform. 2 years later, I decided to switch over to using a thread pool where disk operations instead would use regular blocking calls.
+
+Here are the reasons to use a thread pool instead of the various async. disk I/O APIs:
+
+code complexity
+poor APIs
+poor quality of implementations
+weak support
+complexity
+There are primarily 3 kinds of asynchronous disk APIs.
+
+linux AIO (supported in the kernel)
+posix AIO (supported by linux, Mac OS X, BSD, solaris, AIX etc.)
+Windows’ overlapped I/O
+Supporting 3 distinct APIs as well as a thread pool for systems not supporting any of them introduces a lot of code and a lot of conditionals when testing. To make things worse, the plain posix AIO API is not very rich, and to make decent use of it, one is required to use system specific extensions. In short, even the posix API ends up having many special cases for different platforms. More on this later.
+
+When using linux kernel AIO, files are required to be opened in O_DIRECT mode. This introduces further requirements of all read and write operations to have their file offset, memory buffer and size be aligned to 512 bytes. This introduces significant complexity for multi-file torrents, where the piece blocks no longer will be aligned with the file boundaries. Unaligned write operations need to first cause one or two read operations for the edges, and the write back the buffer. Doing so also introduces extra considerations when writing two adjacent unaligned blocks. Since all operations would be asynchronous, special care need to be taken to serialize them correctly, to not overwrite the edges.
